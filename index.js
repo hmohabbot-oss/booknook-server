@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
 const app = express();
@@ -21,6 +22,22 @@ const client = new MongoClient(uri, {
   }
 });
 
+// JWT ভেরিফিকেশন মিডলওয়্যার (চ্যালেঞ্জ রিকোয়ারমেন্ট)
+const verifyJWT = (req, res, next) => {
+  const authorization = req.headers.authorization;
+  if (!authorization) {
+    return res.status(401).send({ error: true, message: 'Unauthorized access: No token provided' });
+  }
+  const token = authorization.split(' ')[1];
+  jwt.verify(token, process.env.JWT_SECRET || 'booknook_jwt_secret_key_2026', (err, decoded) => {
+    if (err) {
+      return res.status(403).send({ error: true, message: 'Forbidden access: Invalid token' });
+    }
+    req.decoded = decoded;
+    next();
+  });
+};
+
 async function run() {
   try {
     await client.connect();
@@ -30,9 +47,31 @@ async function run() {
 
     console.log("BookNook MongoDB Collections Ready!");
 
+    // বেসিক রুট
     app.get('/', (req, res) => {
       res.send('BookNook Server API is running smoothly!');
     });
+
+    // সার্ভার ও ডাটাবেজ হেলথ চেক
+    app.get('/health', async (req, res) => {
+      try {
+        await client.db("admin").command({ ping: 1 });
+        res.send({ status: "healthy", database: "connected", timestamp: new Date() });
+      } catch (error) {
+        res.status(500).send({ status: "unhealthy", error: error.message });
+      }
+    });
+
+    // JWT টোকেন জেনারেট রুট
+    app.post('/jwt', (req, res) => {
+      const user = req.body;
+      const token = jwt.sign(user, process.env.JWT_SECRET || 'booknook_jwt_secret_key_2026', { expiresIn: '7d' });
+      res.send({ token });
+    });
+
+    // ==========================================
+    // BOOKS API ROUTES
+    // ==========================================
 
     // ১. GET /books - সব বই দেখা অথবা ইমেইল ফিল্টার অনুযায়ী বই দেখা
     app.get('/books', async (req, res) => {
@@ -73,6 +112,12 @@ async function run() {
     app.post('/books', async (req, res) => {
       try {
         const bookData = req.body;
+        
+        // Payload validation
+        if (!bookData.title || !bookData.author || !bookData.category) {
+          return res.status(400).send({ message: "Title, author, and category are mandatory fields." });
+        }
+
         const copies = parseInt(bookData.totalCopies) || 1;
         
         const newBook = {
@@ -102,7 +147,6 @@ async function run() {
         const updateData = req.body;
         const filter = { _id: new ObjectId(id) };
 
-        // বর্তমান বইটি ডাটাবেজ থেকে খুঁজে নেওয়া
         const currentBook = await booksCollection.findOne(filter);
         if (!currentBook) {
           return res.status(404).send({ message: "Book not found" });
@@ -112,9 +156,7 @@ async function run() {
         const oldTotal = currentBook.totalCopies || newTotal;
         const oldAvailable = currentBook.availableCopies ?? oldTotal;
 
-        // বর্তমানে কয়টি বই ধার দেওয়া আছে তা বের করা
         const currentlyBorrowed = Math.max(0, oldTotal - oldAvailable);
-        // নতুন অ্যাভেইলেবল কপি হিসাব করা
         const newAvailable = Math.max(0, newTotal - currentlyBorrowed);
 
         const updateDoc = {
@@ -125,7 +167,7 @@ async function run() {
             image: updateData.image,
             description: updateData.description,
             totalCopies: newTotal,
-            availableCopies: newAvailable, // স্বয়ংক্রিয়ভাবে ব্যালেন্স আপডেট
+            availableCopies: newAvailable,
             updatedAt: new Date()
           }
         };
@@ -147,6 +189,10 @@ async function run() {
         res.status(500).send({ message: "Failed to delete book", error: error.message });
       }
     });
+
+    // ==========================================
+    // BORROW SYSTEM API ROUTES
+    // ==========================================
 
     // ৬. POST /borrows - বই ধার নেওয়া
     app.post('/borrows', async (req, res) => {
@@ -225,6 +271,11 @@ async function run() {
       } catch (error) {
         res.status(500).send({ message: "Failed to return book", error: error.message });
       }
+    });
+
+    // 404 Route Handler
+    app.use((req, res) => {
+      res.status(404).send({ message: "Route not found on BookNook API server" });
     });
 
   } catch (error) {
