@@ -6,7 +6,6 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 5000;
 
-// মিডলওয়্যার
 app.use(cors({
   origin: [process.env.CLIENT_URL || 'http://localhost:3000'],
   credentials: true
@@ -31,20 +30,20 @@ async function run() {
 
     console.log("BookNook MongoDB Collections Ready!");
 
-    // বেসিক রুট
     app.get('/', (req, res) => {
       res.send('BookNook Server API is running smoothly!');
     });
 
-    // ==========================================
-    // BOOKS API ROUTES
-    // ==========================================
-
-    // ১. GET /books - সব বই দেখা অথবা সর্বশেষ বই দেখা (limit দিয়ে)
+    // ১. GET /books - সব বই দেখা অথবা ইমেইল ফিল্টার অনুযায়ী বই দেখা
     app.get('/books', async (req, res) => {
       try {
         const limit = parseInt(req.query.limit) || 0;
+        const email = req.query.email;
         const query = {};
+        
+        if (email) {
+          query.userEmail = email;
+        }
         
         let cursor = booksCollection.find(query).sort({ createdAt: -1 });
         if (limit > 0) {
@@ -58,22 +57,19 @@ async function run() {
       }
     });
 
-    // ২. GET /books/:id - একটি নির্দিষ্ট বইয়ের বিবরণ
+    // ২. GET /books/:id - একটি নির্দিষ্ট বই
     app.get('/books/:id', async (req, res) => {
       try {
         const id = req.params.id;
-        const query = { _id: new ObjectId(id) };
-        const result = await booksCollection.findOne(query);
-        if (!result) {
-          return res.status(404).send({ message: "Book not found" });
-        }
+        const result = await booksCollection.findOne({ _id: new ObjectId(id) });
+        if (!result) return res.status(404).send({ message: "Book not found" });
         res.send(result);
       } catch (error) {
         res.status(500).send({ message: "Invalid Book ID", error: error.message });
       }
     });
 
-    // ৩. POST /books - নতুন বই তৈরি (Add Book)
+    // ৩. POST /books - নতুন বই তৈরি
     app.post('/books', async (req, res) => {
       try {
         const bookData = req.body;
@@ -99,12 +95,27 @@ async function run() {
       }
     });
 
-    // ৪. PATCH /books/:id - বই আপডেট করা
+    // ৪. PATCH /books/:id - বই আপডেট করা (স্মার্ট কপি ব্যালেন্সিং সহ)
     app.patch('/books/:id', async (req, res) => {
       try {
         const id = req.params.id;
         const updateData = req.body;
         const filter = { _id: new ObjectId(id) };
+
+        // বর্তমান বইটি ডাটাবেজ থেকে খুঁজে নেওয়া
+        const currentBook = await booksCollection.findOne(filter);
+        if (!currentBook) {
+          return res.status(404).send({ message: "Book not found" });
+        }
+
+        const newTotal = parseInt(updateData.totalCopies) || 1;
+        const oldTotal = currentBook.totalCopies || newTotal;
+        const oldAvailable = currentBook.availableCopies ?? oldTotal;
+
+        // বর্তমানে কয়টি বই ধার দেওয়া আছে তা বের করা
+        const currentlyBorrowed = Math.max(0, oldTotal - oldAvailable);
+        // নতুন অ্যাভেইলেবল কপি হিসাব করা
+        const newAvailable = Math.max(0, newTotal - currentlyBorrowed);
 
         const updateDoc = {
           $set: {
@@ -113,7 +124,8 @@ async function run() {
             category: updateData.category,
             image: updateData.image,
             description: updateData.description,
-            totalCopies: parseInt(updateData.totalCopies) || 1,
+            totalCopies: newTotal,
+            availableCopies: newAvailable, // স্বয়ংক্রিয়ভাবে ব্যালেন্স আপডেট
             updatedAt: new Date()
           }
         };
@@ -129,24 +141,18 @@ async function run() {
     app.delete('/books/:id', async (req, res) => {
       try {
         const id = req.params.id;
-        const query = { _id: new ObjectId(id) };
-        const result = await booksCollection.deleteOne(query);
+        const result = await booksCollection.deleteOne({ _id: new ObjectId(id) });
         res.send(result);
       } catch (error) {
         res.status(500).send({ message: "Failed to delete book", error: error.message });
       }
     });
 
-    // ==========================================
-    // BORROW SYSTEM API ROUTES
-    // ==========================================
-
     // ৬. POST /borrows - বই ধার নেওয়া
     app.post('/borrows', async (req, res) => {
       try {
         const { bookId, userEmail, userName, returnDate } = req.body;
 
-        // Challenge: একই বই একই ইউজার দুইবার ধার নিতে পারবে না (No Double Borrow)
         const alreadyBorrowed = await borrowsCollection.findOne({
           bookId: bookId,
           userEmail: userEmail
@@ -158,13 +164,11 @@ async function run() {
           });
         }
 
-        // বইটির স্টক চেক
         const book = await booksCollection.findOne({ _id: new ObjectId(bookId) });
         if (!book || book.availableCopies <= 0) {
           return res.status(400).send({ message: "This book is currently not available." });
         }
 
-        // ধার নেওয়ার রেকর্ড সংরক্ষণ
         const borrowRecord = {
           bookId: bookId,
           title: book.title,
@@ -178,7 +182,6 @@ async function run() {
 
         const insertResult = await borrowsCollection.insertOne(borrowRecord);
 
-        // Challenge: $inc ব্যবহার করে বইয়ের কপি ১ কমিয়ে দেওয়া
         await booksCollection.updateOne(
           { _id: new ObjectId(bookId) },
           { $inc: { availableCopies: -1 } }
@@ -190,36 +193,29 @@ async function run() {
       }
     });
 
-    // ৭. GET /borrows - লগইন করা ইউজারের ধার নেওয়া বইয়ের তালিকা
+    // ৭. GET /borrows - ইউজারের ধার নেওয়া বইয়ের তালিকা
     app.get('/borrows', async (req, res) => {
       try {
         const email = req.query.email;
-        if (!email) {
-          return res.status(400).send({ message: "User email is required" });
-        }
+        if (!email) return res.status(400).send({ message: "User email is required" });
 
-        const query = { userEmail: email };
-        const result = await borrowsCollection.find(query).toArray();
+        const result = await borrowsCollection.find({ userEmail: email }).toArray();
         res.send(result);
       } catch (error) {
         res.status(500).send({ message: "Failed to fetch borrows", error: error.message });
       }
     });
 
-    // ৮. DELETE /borrows/:id - বই ফেরত দেওয়া (Return Book)
+    // ৮. DELETE /borrows/:id - বই ফেরত দেওয়া
     app.delete('/borrows/:id', async (req, res) => {
       try {
         const borrowId = req.params.id;
         const borrowRecord = await borrowsCollection.findOne({ _id: new ObjectId(borrowId) });
 
-        if (!borrowRecord) {
-          return res.status(404).send({ message: "Borrow record not found" });
-        }
+        if (!borrowRecord) return res.status(404).send({ message: "Borrow record not found" });
 
-        // ধার নেওয়ার রেকর্ড ডিলিট করা
         await borrowsCollection.deleteOne({ _id: new ObjectId(borrowId) });
 
-        // Challenge: ফেরত দেওয়ার পর বইয়ের কপি $inc দিয়ে ১ বাড়িয়ে দেওয়া
         await booksCollection.updateOne(
           { _id: new ObjectId(borrowRecord.bookId) },
           { $inc: { availableCopies: 1 } }
