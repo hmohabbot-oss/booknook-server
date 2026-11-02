@@ -41,20 +41,53 @@ app.get('/health', async (req, res) => {
   }
 });
 
+// পুরনো N/A ইমেইলের বইগুলোকে বর্তমান ইউজারের নামে ফিক্স করার রুট
+app.get('/fix-books', async (req, res) => {
+  try {
+    const targetEmail = (req.query.email || 'alimurtazamuaz@gmail.com').trim().toLowerCase();
+    const targetName = req.query.name || 'Ali Murtaza';
+    const booksCollection = getDb().collection("books");
+
+    const result = await booksCollection.updateMany(
+      {
+        $or: [
+          { userEmail: { $exists: false } },
+          { userEmail: null },
+          { userEmail: "" },
+          { userEmail: "N/A" }
+        ]
+      },
+      {
+        $set: {
+          userEmail: targetEmail,
+          userName: targetName
+        }
+      }
+    );
+
+    res.send({
+      success: true,
+      message: `Successfully assigned ${result.modifiedCount} books to ${targetEmail}`,
+      modifiedCount: result.modifiedCount
+    });
+  } catch (error) {
+    res.status(500).send({ error: error.message });
+  }
+});
+
 app.post('/jwt', (req, res) => {
   const user = req.body;
   const token = jwt.sign(user, process.env.JWT_SECRET || 'booknook_jwt_secret_key_2026', { expiresIn: '7d' });
   res.send({ token });
 });
 
-// ১. GET /books - সব বই অথবা নির্দিষ্ট ইউজারের বই (Case-insensitive)
+// ১. GET /books
 app.get('/books', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 0;
     const email = req.query.email;
     const query = {};
     
-    // নির্দিষ্ট ইউজারের বই ফিল্টার (ছোট-বড় অক্ষরের সমাধান)
     if (email && email.trim() !== '') {
       query.userEmail = { $regex: new RegExp(`^${email.trim()}$`, 'i') };
     }
@@ -83,7 +116,7 @@ app.get('/books/:id', async (req, res) => {
   }
 });
 
-// ৩. POST /books
+// ৩. POST /books (ইমেইল ও নাম শতভাগ নিশ্চিত করে সেভ করা)
 app.post('/books', async (req, res) => {
   try {
     const bookData = req.body;
@@ -92,6 +125,9 @@ app.post('/books', async (req, res) => {
     }
 
     const copies = parseInt(bookData.totalCopies) || 1;
+    const email = (bookData.userEmail || bookData.email || '').trim().toLowerCase();
+    const name = bookData.userName || bookData.name || 'BookNook Reader';
+
     const newBook = {
       title: bookData.title,
       author: bookData.author,
@@ -100,8 +136,8 @@ app.post('/books', async (req, res) => {
       description: bookData.description,
       totalCopies: copies,
       availableCopies: copies,
-      userEmail: (bookData.userEmail || '').trim().toLowerCase(),
-      userName: bookData.userName,
+      userEmail: email,
+      userName: name,
       createdAt: new Date()
     };
 
