@@ -47,13 +47,17 @@ app.post('/jwt', (req, res) => {
   res.send({ token });
 });
 
-// ২. GET /books
+// ১. GET /books - সব বই অথবা নির্দিষ্ট ইউজারের বই (Case-insensitive)
 app.get('/books', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 0;
     const email = req.query.email;
     const query = {};
-    if (email) query.userEmail = email;
+    
+    // নির্দিষ্ট ইউজারের বই ফিল্টার (ছোট-বড় অক্ষরের সমাধান)
+    if (email && email.trim() !== '') {
+      query.userEmail = { $regex: new RegExp(`^${email.trim()}$`, 'i') };
+    }
 
     const booksCollection = getDb().collection("books");
     let cursor = booksCollection.find(query).sort({ createdAt: -1 });
@@ -66,7 +70,7 @@ app.get('/books', async (req, res) => {
   }
 });
 
-// ৩. GET /books/:id
+// ২. GET /books/:id
 app.get('/books/:id', async (req, res) => {
   try {
     const id = req.params.id;
@@ -79,7 +83,7 @@ app.get('/books/:id', async (req, res) => {
   }
 });
 
-// ৪. POST /books
+// ৩. POST /books
 app.post('/books', async (req, res) => {
   try {
     const bookData = req.body;
@@ -96,7 +100,7 @@ app.post('/books', async (req, res) => {
       description: bookData.description,
       totalCopies: copies,
       availableCopies: copies,
-      userEmail: bookData.userEmail,
+      userEmail: (bookData.userEmail || '').trim().toLowerCase(),
       userName: bookData.userName,
       createdAt: new Date()
     };
@@ -109,7 +113,7 @@ app.post('/books', async (req, res) => {
   }
 });
 
-// ৫. PATCH /books/:id
+// ৪. PATCH /books/:id
 app.patch('/books/:id', async (req, res) => {
   try {
     const id = req.params.id;
@@ -147,7 +151,7 @@ app.patch('/books/:id', async (req, res) => {
   }
 });
 
-// ৬. DELETE /books/:id
+// ৫. DELETE /books/:id
 app.delete('/books/:id', async (req, res) => {
   try {
     const id = req.params.id;
@@ -159,14 +163,20 @@ app.delete('/books/:id', async (req, res) => {
   }
 });
 
-// ৭. POST /borrows
+// ৬. POST /borrows
 app.post('/borrows', async (req, res) => {
   try {
     const { bookId, userEmail, userName, returnDate } = req.body;
+    const normalizedEmail = (userEmail || '').trim().toLowerCase();
+
     const borrowsCollection = getDb().collection("borrows");
     const booksCollection = getDb().collection("books");
 
-    const alreadyBorrowed = await borrowsCollection.findOne({ bookId, userEmail });
+    const alreadyBorrowed = await borrowsCollection.findOne({ 
+      bookId, 
+      userEmail: { $regex: new RegExp(`^${normalizedEmail}$`, 'i') } 
+    });
+
     if (alreadyBorrowed) {
       return res.status(400).send({ message: "You have already borrowed this book and have not returned it yet." });
     }
@@ -180,7 +190,7 @@ app.post('/borrows', async (req, res) => {
       bookId,
       title: book.title,
       image: book.image,
-      userEmail,
+      userEmail: normalizedEmail,
       userName,
       borrowDate: new Date().toISOString().split('T')[0],
       returnDate: returnDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
@@ -196,21 +206,23 @@ app.post('/borrows', async (req, res) => {
   }
 });
 
-// ৮. GET /borrows
+// ৭. GET /borrows
 app.get('/borrows', async (req, res) => {
   try {
     const email = req.query.email;
     if (!email) return res.status(400).send({ message: "User email is required" });
 
     const borrowsCollection = getDb().collection("borrows");
-    const result = await borrowsCollection.find({ userEmail: email }).toArray();
+    const result = await borrowsCollection.find({ 
+      userEmail: { $regex: new RegExp(`^${email.trim()}$`, 'i') } 
+    }).toArray();
     res.send(result);
   } catch (error) {
     res.status(500).send({ message: "Failed to fetch borrows", error: error.message });
   }
 });
 
-// ৯. DELETE /borrows/:id
+// ৮. DELETE /borrows/:id
 app.delete('/borrows/:id', async (req, res) => {
   try {
     const borrowId = req.params.id;
